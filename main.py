@@ -1,24 +1,61 @@
 import cv2 as cv
 import numpy as np
 from time import time, sleep
-from math import atan2, sqrt, sin, cos, atan
+from math import atan2, sqrt, sin, cos, atan, tan
 from numba import njit, prange, uint8
 import serial
 from crc import crc8
+from dataclasses import dataclass
 
 CAM_INDEX = 0
 RESIZE = 1.5
 MIN_OBJ_AREA = [15, 100, 100]
 IMG_SIZE = (640, 360)
 
+FIELD_SIZE = (220, 180)
+
 PI = 3.141592
 RAD2DEG = 180 / PI
 DEG2RAD = PI / 180
+
+@dataclass
+class PointProj:
+    proj: float
+    dist: float
+
+def vec2point(vec):
+    return Point(cos(vec.dir), sin(vec.dir)) * vec.size
+
+def point2vec(point):
+    return Vec(point.size(), atan2(point.y, point.x))
 
 class Point:
     def __init__(self, x = 0, y = 1):
         self.x = x
         self.y = y
+        
+    def int(self):
+        return Point(int(round(self.x)), int(round(self.y)))
+       
+    def proj(self, coef, intercept):
+    	normal = -1 / coef
+    	
+    	# y = coef * x + intercept
+    	# intercept = y - coef * x
+    	
+    	normalIntercept = self.y - normal * self.x
+    	
+    	# y = coef1 * x + intercept1 = y = coef2 * x + intercept2
+    	# coef1 * x + intercept1 = coef2 * x + intercept2
+    	# (coef2 - coef1) * x = intercept1 - intercept2
+    	# x = (intercept1 - intercept2) / (coef2 - coef1)
+    	
+    	px = (intercept - normalIntercept) / (normal - coef)
+    	py = px * coef + intercept
+    	
+    	res = PointProj(proj=Point(px, py-intercept).size(), dist=(Point(px, py) - self).size())
+    	
+    	return res
 
     def tuple(self):
         return (self.x, self.y)
@@ -49,6 +86,9 @@ class Point:
     
     def copy(self):
         return Point(self.x, self.y)
+    
+    def __str__(self):
+        return f"Point({self.x}, {self.y})"
  
 class Vec:
     def __init__(self, size = 1, angle = 0):
@@ -65,6 +105,9 @@ class Vec:
         x = x1 + x2
         y = y1 + y2
         return Vec(sqrt(x * x + y * y), (RAD2DEG * atan2(y, x) + 360) % 360)
+    
+    def __mul__(self, other):
+       return Vec(self.size * other, self.dir)
     
     def tuple(self):
         return (self.size, self.dir)
@@ -126,7 +169,30 @@ class RobotInterface:
         msg.append(crc8(msg))
         
         return bytes(msg)
+     
+class FieldPainter():
+    def __init__(self):
+        self.size = Point(FIELD_SIZE[0], FIELD_SIZE[1])
+        self.center = self.size / 2   
         
+        self.color = (50, 200, 40)
+        self.ballColor = (20, 30, 180)
+        self.ballTrajectoryColor = (70, 150, 140)
+        
+    def update(self, world, trajectories=True):
+        self.image = np.zeros((int(self.size.y), int(self.size.x), 3), dtype=np.uint8)
+        self.image[:] = self.color
+        
+        self.image = cv.circle(self.image, (world.ball.pos + self.center).int().tuple(), 4, self.ballColor, -1)
+        
+        if trajectories:
+            self.image = cv.line(self.image, (world.ball.pos + self.center).int().tuple(), (self.center + world.ball.predict(1)).int().tuple(), self.ballTrajectoryColor, 2)
+        
+    def show(self, state=None):
+        if state != None:
+           self.update(state)
+        
+        imshow("Field", self.image)
 
 @njit(parallel=True, cache=False, fastmath=True)
 def _CD_change(values, kernel, sz, m, d, data):
@@ -318,11 +384,13 @@ def calculatePos(weights):
     posOfBlue = np.array([-90, 0]) + np.array([cos(blueAngle), sin(blueAngle)]) * blueDist
     blue = Point(posOfBlue[0], posOfBlue[1])
     
+    weights[BLUE_GOAL] /= 3
+    
     if (weights[YELLOW_GOAL] + weights[BLUE_GOAL]) != 0:
-        if (blue - world.robot.pos).size() > 20:
+        if (blue - world.robot.pos).size() > 40:
             weights[BLUE_GOAL] /= 5
         
-        if (yellow - world.robot.pos).size() > 20:
+        if (yellow - world.robot.pos).size() > 40:
             weights[YELLOW_GOAL] /= 5
             
         world.robot.pos = ((yellow * weights[YELLOW_GOAL] + blue * weights[BLUE_GOAL]) / (weights[YELLOW_GOAL] + weights[BLUE_GOAL]))
@@ -475,13 +543,16 @@ def makeMask(angles):
 
 from sklearn.linear_model import LinearRegression
 
-class Obj:
+class Ball:
     def __init__(self):
         self.pos = Point()
         self.vel = Point()
         self.velVec = Vec()
         self.lastTime = -1
-        self.oldPoints = [Point(0, 0)] * 7
+        self.oldPoints = [Point(0, 0)] * 5
+        self.projSize = 0
+        
+        self.r = 0.035
     
     def updatePosition(self, pos):
         self.pos = pos.copy()
@@ -493,12 +564,31 @@ class Obj:
             self.lastTime = time()
             return
         
+        dt = time() - self.lastTime
+        
         lineReg = LinearRegression()
         lineReg.fit([[el.x] for el in self.oldPoints], [[el.y] for el in self.oldPoints])
         
-        self.velVec = Vec((self.oldPoints[-1] - self.oldPoints[0]).size(), lineReg.coef_[0])
+        params = [p.proj(lineReg.coef_, lineReg.intercept_) for p in self.oldPoints]
+        
+        proj = np.array([x.proj for x in params])
+        dist = np.array([x.dist for x in params])
+        
+        if proj[0] > proj[-1]:
+            lineReg.coef_[0] = -lineReg.coef_[0]
+        
+        projSize = ((np.max(proj) - np.min(proj)) / len(self.oldPoints)) - np.mean(np.abs(dist)) * 2
+        projSize /= dt
+        
+        if projSize < 0:
+            projSize = 0
+        
+        self.velVec = Vec(projSize, atan(lineReg.coef_[0]))
         
         self.lastTime = time()
+    
+    def predict(self, t):
+        return self.pos + vec2point(self.velVec * t)
 
 class World:
     def __init__(self, acc = 20):
@@ -506,7 +596,7 @@ class World:
         self.interface.acc = acc
         
         self.robot = Robot()
-        self.ball = Obj()
+        self.ball = Ball()
         
         
 world = World()
@@ -573,6 +663,7 @@ cv.createTrackbar('Color range', 'frame', 1, 50, updateDelta)
 
 ### FIELD INFO
 fieldData = FieldData()
+fieldPainter = FieldPainter()
 
 ### ROBOT PARAMS
 PIX2CM_BALL = [[0, 0], [13, 21.3], [18, 25.4], [23, 29.6], [28, 37.4], [33, 47.9], [38, 56.8], [43, 68.9], [48, 79.8], [53, 88.2], [58, 96.8], [63, 103.1], [68, 109], [73, 114.5], [78, 119.1], [83, 121.8], [88, 123.7], [93, 125.2], [98, 127.4], [103, 130.1], [203, 190.1]]
@@ -588,6 +679,15 @@ def pix2cm(x, data):
     
     return (p1[0] * abs(p2[1] - x) + p2[0] * abs(p1[1] - x)) / (p2[1] - p1[1])
 
+def cm2pix(x, data):
+
+    i = 0
+    while data[i][0] < x and i + 1 < len(data):
+        i += 1
+    
+    p1, p2 = data[i - 1], data[i]
+    
+    return (p1[1] * abs(p2[0] - x) + p2[1] * abs(p1[0] - x)) / (p2[0] - p1[0])
 
 ### MAIN CYCLE
 while 1:
@@ -616,10 +716,14 @@ while 1:
     else:
         ser.write(world.interface.toBytes())
     
-    print("BALL: " + str(world.ball.pos.tuple()) + "\t" + "VEL:" + str(world.ball.velVec.tuple()))
+    fieldPainter.show(world)
+    
+    #print("BALL: " + str(world.ball.pos.tuple()) + "\t" + "VEL:" + str(world.ball.velVec.tuple()))
     
     ### SOME ADDITIONAL INFO
     output = cv.putText(output, col[calibrationState].name, (10, 30), cv.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 128), 2, cv.LINE_AA)
+    
+    #print(cm2pix(60, PIX2CM_BALL))#output = cv.line(output, ball.pos
     
     ### SHOW FRAME
     imshow('frame', cv.resize(output, None, fx = RESIZE, fy = RESIZE))
