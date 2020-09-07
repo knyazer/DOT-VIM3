@@ -53,7 +53,11 @@ class Point:
     	px = (intercept - normalIntercept) / (normal - coef)
     	py = px * coef + intercept
     	
-    	res = PointProj(proj=Point(px, py-intercept).size(), dist=(Point(px, py) - self).size())
+    	msign = 1
+    	if px < 0:
+    	    msign = -1
+    	
+    	res = PointProj(proj=Point(px, py-intercept).size() * msign, dist=(Point(px, py) - self).size())
     	
     	return res
 
@@ -94,6 +98,9 @@ class Vec:
     def __init__(self, size = 1, angle = 0):
         self.size = size
         self.dir = angle
+    
+    def copy(self):
+        return Vec(self.size, self.dir)
     
     def __add__(self, other):
         x1 = cos(self.dir * DEG2RAD) * self.size
@@ -186,7 +193,7 @@ class FieldPainter():
         self.image = cv.circle(self.image, (world.ball.pos + self.center).int().tuple(), 4, self.ballColor, -1)
         
         if trajectories:
-            self.image = cv.line(self.image, (world.ball.pos + self.center).int().tuple(), (self.center + world.ball.predict(1)).int().tuple(), self.ballTrajectoryColor, 2)
+            self.image = cv.line(self.image, (world.ball.pos + self.center).int().tuple(), (self.center + world.ball.predict(20)).int().tuple(), self.ballTrajectoryColor, 2)
         
     def show(self, state=None):
         if state != None:
@@ -369,30 +376,38 @@ def sign(x):
 
 def comp(a):
     return -a[1]
+#rr = 0
 
 def calculatePos(weights):
     global world, fieldData
-    
+    #global rr
     ### CALC CURRENT POSITION OF ROBOT
-    yellowDist = pix2cm(fieldData.v[YELLOW_GOAL].size - 5, PIX2CM_GOAL)
+    yellowDist = pix2cm(fieldData.v[YELLOW_GOAL].size, PIX2CM_GOAL)
+    #rr = 0.9 * rr + 0.1 * fieldData.v[YELLOW_GOAL].size
+    #print(rr)
     yellowAngle = fieldData.v[YELLOW_GOAL].dir * DEG2RAD
     posOfYellow = np.array([90, 0]) + np.array([cos(yellowAngle), sin(yellowAngle)]) * yellowDist
     yellow = Point(posOfYellow[0], posOfYellow[1])
     
-    blueDist = pix2cm(fieldData.v[BLUE_GOAL].size - 12, PIX2CM_GOAL)
+    blueDist = pix2cm(fieldData.v[BLUE_GOAL].size - 7, PIX2CM_GOAL)
     blueAngle = fieldData.v[BLUE_GOAL].dir * DEG2RAD
     posOfBlue = np.array([-90, 0]) + np.array([cos(blueAngle), sin(blueAngle)]) * blueDist
     blue = Point(posOfBlue[0], posOfBlue[1])
     
-    weights[BLUE_GOAL] /= 3
+    #print(blue)
+    #print("Y")
+    #print(yellow)
     
-    if (weights[YELLOW_GOAL] + weights[BLUE_GOAL]) != 0:
-        if (blue - world.robot.pos).size() > 40:
-            weights[BLUE_GOAL] /= 5
-        
-        if (yellow - world.robot.pos).size() > 40:
-            weights[YELLOW_GOAL] /= 5
-            
+    #weights[BLUE_GOAL]
+    
+    #if (weights[YELLOW_GOAL] + weights[BLUE_GOAL]) != 0:
+    #    if (blue - world.robot.pos).size() > 40:
+    #        weights[BLUE_GOAL] /= 5
+    #    
+    #    if (yellow - world.robot.pos).size() > 40:
+    #        weights[YELLOW_GOAL] /= 5
+    #        
+    if weights[YELLOW_GOAL] + weights[BLUE_GOAL] != 0:
         world.robot.pos = ((yellow * weights[YELLOW_GOAL] + blue * weights[BLUE_GOAL]) / (weights[YELLOW_GOAL] + weights[BLUE_GOAL]))
         
         
@@ -549,7 +564,7 @@ class Ball:
         self.vel = Point()
         self.velVec = Vec()
         self.lastTime = -1
-        self.oldPoints = [Point(0, 0)] * 5
+        self.oldPoints = [Point(0, 0)] * 7
         self.projSize = 0
         
         self.r = 0.035
@@ -574,21 +589,42 @@ class Ball:
         proj = np.array([x.proj for x in params])
         dist = np.array([x.dist for x in params])
         
+        added = 0
         if proj[0] > proj[-1]:
-            lineReg.coef_[0] = -lineReg.coef_[0]
+            added = PI
+        #    print("ZERO")
+        #print("PI")
         
-        projSize = ((np.max(proj) - np.min(proj)) / len(self.oldPoints)) - np.mean(np.abs(dist)) * 2
+        #if lineReg.coef_[0] < 0:
+        #    lineReg.coef_[0] = -1/lineReg.coef_[0]
+        
+        projSize = (np.max(proj) - np.min(proj)) / len(self.oldPoints) - np.mean(np.abs(dist)) * 2.1
         projSize /= dt
         
         if projSize < 0:
             projSize = 0
         
-        self.velVec = Vec(projSize, atan(lineReg.coef_[0]))
+        self.velVec = Vec(projSize, added + atan(lineReg.coef_[0]))
         
         self.lastTime = time()
     
     def predict(self, t):
-        return self.pos + vec2point(self.velVec * t)
+        pos = self.pos.copy()
+        vel = self.velVec.copy()
+        
+        if vel.size < 0:
+            vel.size = -vel.size
+            vel.dir = PI + vel.dir
+        
+        for i in range(int(t * 100)):
+            pos = pos + vec2point(vel * 0.01)
+            vel.size -= 0.05
+            print(vel.size)
+            if vel.size < 0:
+                vel.size = 0
+                return pos
+        return pos
+        #return self.pos + vec2point(self.velVec * t)
 
 class World:
     def __init__(self, acc = 20):
@@ -646,8 +682,8 @@ os.system('v4l2-ctl -c white_balance_temperature_auto=1;')
 
 ### VISION CONFIGURATION
 cap = cv.VideoCapture(CAM_INDEX)
-cap.set(cv.CAP_PROP_FRAME_WIDTH, IMG_SIZE[0])
-cap.set(cv.CAP_PROP_FRAME_HEIGHT, IMG_SIZE[1])
+cap.set(cv.CAP_PROP_FRAME_WIDTH, 1280)
+cap.set(cv.CAP_PROP_FRAME_HEIGHT, 720)
 cap.set(cv.CAP_PROP_CONTRAST, 25)
 cap.set(cv.CAP_PROP_BRIGHTNESS, 100)
 cap.set(cv.CAP_PROP_SATURATION, 100)
@@ -668,7 +704,9 @@ fieldPainter = FieldPainter()
 ### ROBOT PARAMS
 PIX2CM_BALL = [[0, 0], [13, 21.3], [18, 25.4], [23, 29.6], [28, 37.4], [33, 47.9], [38, 56.8], [43, 68.9], [48, 79.8], [53, 88.2], [58, 96.8], [63, 103.1], [68, 109], [73, 114.5], [78, 119.1], [83, 121.8], [88, 123.7], [93, 125.2], [98, 127.4], [103, 130.1], [203, 190.1]]
 
-PIX2CM_GOAL = [[0, 0], [10, 24], [15, 34.3], [20, 49.9], [25, 60.9], [30, 69.5], [35, 75.5], [40, 82.2], [45, 86.6], [50, 91.4], [55, 95.5], [60, 97.7], [65, 101.7], [70, 104.8], [75, 107.2], [80, 109.5], [85, 111.2], [90, 113.4], [95, 114.2], [100, 115.7], [160, 134]]
+PIX2CM_GOAL = [[0, 0], [10, 30.3], [15, 42.2], [20, 52.4], [25, 61.7], [30, 72.8], [35, 78.6], [40, 87], [45, 92.4], [50, 96.6], [55, 101.9], [60, 108.6], [65, 112.8], [70, 116.2], [75, 120.5], [80, 123], [85, 125.2], [90, 127.4], [95, 130], [100, 131.5], [160, 160]]
+
+PIX2CM_BALL = PIX2CM_GOAL
 
 def pix2cm(x, data):
     i = 0
@@ -693,12 +731,13 @@ def cm2pix(x, data):
 while 1:
     ### READ FRAME
     _, frame = cap.read()
-    frame = frame[50:-50, 170:-170, :]
+    frame = cv.resize(frame, None, fx=0.5, fy=0.5)
+    frame = frame[0:-10, 150:-130, :]
     frame = cv.rotate(frame, cv.ROTATE_90_COUNTERCLOCKWISE)
     
     ### RECALCULATE FRAME SIZE
     H, W, _ = frame.shape
-    CENTER = (130, 142)
+    CENTER = (168, 182)
     
     ### DENOISE
     frame = cv.GaussianBlur(frame, (3, 3), 0)
@@ -723,7 +762,11 @@ while 1:
     ### SOME ADDITIONAL INFO
     output = cv.putText(output, col[calibrationState].name, (10, 30), cv.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 128), 2, cv.LINE_AA)
     
+    output = cv.circle(output, CENTER, 4, (255, 0, 0), -1)
+    
     #print(cm2pix(60, PIX2CM_BALL))#output = cv.line(output, ball.pos
+    
+    #print(world.robot.pos)
     
     ### SHOW FRAME
     imshow('frame', cv.resize(output, None, fx = RESIZE, fy = RESIZE))
