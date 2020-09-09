@@ -1,7 +1,7 @@
 import cv2 as cv
 import numpy as np
 from time import time, sleep
-from math import atan2, sqrt, sin, cos, atan, tan
+from math import atan2, sqrt, sin, cos, atan, tan, acos, asin
 from numba import njit, prange, uint8
 import serial
 from crc import crc8
@@ -194,6 +194,7 @@ class FieldPainter():
         
         if trajectories:
             self.image = cv.line(self.image, (world.ball.pos + self.center).int().tuple(), (self.center + world.ball.predict(20)).int().tuple(), self.ballTrajectoryColor, 2)
+            print("From {}, Target: {}".format(str(world.ball.pos), str(world.ball.predict(20))))
         
     def show(self, state=None):
         if state != None:
@@ -380,42 +381,65 @@ def comp(a):
 
 def calculatePos(weights):
     global world, fieldData
+    
+    L = 90
     #global rr
-    ### CALC CURRENT POSITION OF ROBOT
-    yellowDist = pix2cm(fieldData.v[YELLOW_GOAL].size, PIX2CM_GOAL)
-    #rr = 0.9 * rr + 0.1 * fieldData.v[YELLOW_GOAL].size
-    #print(rr)
-    yellowAngle = fieldData.v[YELLOW_GOAL].dir * DEG2RAD
-    posOfYellow = np.array([90, 0]) + np.array([cos(yellowAngle), sin(yellowAngle)]) * yellowDist
-    yellow = Point(posOfYellow[0], posOfYellow[1])
+    if weights[YELLOW_GOAL] == 0 or weights[BLUE_GOAL] == 0:
+        ### CALC CURRENT POSITION OF ROBOT
+        yellowDist = pix2cm(fieldData.v[YELLOW_GOAL].size, PIX2CM_GOAL)
+        yellowAngle = ((fieldData.v[YELLOW_GOAL].dir + 360 - world.interface.angle) % 360) * DEG2RAD
+        posOfYellow = np.array([L, 0]) + np.array([cos(yellowAngle), sin(yellowAngle)]) * yellowDist
+        yellow = Point(posOfYellow[0], posOfYellow[1])
     
-    blueDist = pix2cm(fieldData.v[BLUE_GOAL].size - 7, PIX2CM_GOAL)
-    blueAngle = fieldData.v[BLUE_GOAL].dir * DEG2RAD
-    posOfBlue = np.array([-90, 0]) + np.array([cos(blueAngle), sin(blueAngle)]) * blueDist
-    blue = Point(posOfBlue[0], posOfBlue[1])
-    
-    #print(blue)
-    #print("Y")
-    #print(yellow)
-    
-    #weights[BLUE_GOAL]
-    
-    #if (weights[YELLOW_GOAL] + weights[BLUE_GOAL]) != 0:
-    #    if (blue - world.robot.pos).size() > 40:
-    #        weights[BLUE_GOAL] /= 5
-    #    
-    #    if (yellow - world.robot.pos).size() > 40:
-    #        weights[YELLOW_GOAL] /= 5
-    #        
-    if weights[YELLOW_GOAL] + weights[BLUE_GOAL] != 0:
-        world.robot.pos = ((yellow * weights[YELLOW_GOAL] + blue * weights[BLUE_GOAL]) / (weights[YELLOW_GOAL] + weights[BLUE_GOAL]))
+        blueDist = pix2cm(fieldData.v[BLUE_GOAL].size - 7, PIX2CM_GOAL)
+        blueAngle = ((fieldData.v[BLUE_GOAL].dir + 360 - world.interface.angle) % 360) * DEG2RAD
+        posOfBlue = np.array([-L, 0]) + np.array([cos(blueAngle), sin(blueAngle)]) * blueDist
+        blue = Point(posOfBlue[0], posOfBlue[1])
+     
+        if weights[YELLOW_GOAL] + weights[BLUE_GOAL] != 0:
+            world.robot.pos = ((yellow * weights[YELLOW_GOAL] + blue * weights[BLUE_GOAL]) / (weights[YELLOW_GOAL] + weights[BLUE_GOAL]))
         
+        
+        ballAngle = ((fieldData.v[BALL].dir + 360 - world.interface.angle) % 360) * DEG2RAD
+    else:
+        d2 = pix2cm(fieldData.v[YELLOW_GOAL].size - 8, PIX2CM_GOAL)
+        d1 = pix2cm(fieldData.v[BLUE_GOAL].size + 6, PIX2CM_GOAL)
+        alpha = fieldData.v[BLUE_GOAL].dir - fieldData.v[YELLOW_GOAL].dir
+       
+        if alpha < 0:
+            alpha += 360
+        
+        alpha *= DEG2RAD
+        
+        val = (d2 ** 2 + (2 * L) ** 2 - d1 ** 2) / (2 * d2 * 2 * L)
+        if abs(val) > 1:
+            val = sign(val)
+        
+        beta1 = acos(val)
+        beta2 = asin(sin(alpha) * d1 / (2 * L))
+        beta = (beta1 + beta2) / 2
+        
+        x1 = L - d2 * cos(beta)
+        x2 = d1 * cos(PI - alpha - beta) - L
+        x = (x1 + x2) / 2
+        
+        y1 = d1 * sin(PI - alpha - beta)
+        y2 = d2 * sin(beta)
+        y = (y1 + y2) / 2 
+        
+        #print(d1, d2)
+        
+        angle = -beta * RAD2DEG + fieldData.v[YELLOW_GOAL].dir
+        #print(f"{angle} eq {world.interface.angle}")
+        
+        world.robot.pos = Point(x, y)
+        
+        ballAngle = ((fieldData.v[BALL].dir + 360 - angle) % 360) * DEG2RAD
         
     ballDist = pix2cm(fieldData.v[BALL].size, PIX2CM_BALL)
-    ballAngle = fieldData.v[BALL].dir * DEG2RAD
-    
     if weights[BALL] != 0:
-        world.ball.updatePosition(world.robot.pos + -Point(cos(ballAngle), sin(ballAngle)) * ballDist)
+        world.ball.updatePosition(world.robot.pos + Point(cos(ballAngle), sin(ballAngle)) * ballDist)
+        #print(world.ball.pos)
         world.ball.updateVelocity()
     
 
@@ -473,7 +497,7 @@ def detect(frame):
         relativeCentroid /= wholeWeight
         
         ### CALCULATE SIZE AND DIRECTION OF OBJECT VECTOR
-        angle = (atan2(relativeCentroid[0], relativeCentroid[1]) * RAD2DEG + 360 - world.interface.angle) % 360
+        angle = (atan2(relativeCentroid[0], relativeCentroid[1]) * RAD2DEG + 360) % 360
         dist = np.sqrt(np.sum(relativeCentroid ** 2))
         
         ### SAVE DATA
@@ -566,6 +590,7 @@ class Ball:
         self.lastTime = -1
         self.oldPoints = [Point(0, 0)] * 7
         self.projSize = 0
+        self.current = Point(0, 0)
         
         self.r = 0.035
     
@@ -580,6 +605,7 @@ class Ball:
             return
         
         dt = time() - self.lastTime
+        self.lastTime = time()
         
         lineReg = LinearRegression()
         lineReg.fit([[el.x] for el in self.oldPoints], [[el.y] for el in self.oldPoints])
@@ -592,13 +618,8 @@ class Ball:
         added = 0
         if proj[0] > proj[-1]:
             added = PI
-        #    print("ZERO")
-        #print("PI")
         
-        #if lineReg.coef_[0] < 0:
-        #    lineReg.coef_[0] = -1/lineReg.coef_[0]
-        
-        projSize = (np.max(proj) - np.min(proj)) / len(self.oldPoints) - np.mean(np.abs(dist)) * 2.1
+        projSize = ((np.max(proj) - np.min(proj)) - np.mean(np.abs(dist)) * 2) / (len(self.oldPoints) - 2)
         projSize /= dt
         
         if projSize < 0:
@@ -606,7 +627,8 @@ class Ball:
         
         self.velVec = Vec(projSize, added + atan(lineReg.coef_[0]))
         
-        self.lastTime = time()
+        self.current = self.predict(0.5) * 0.5 + self.current * 0.5
+        print("Current: {}".format(self.current))
     
     def predict(self, t):
         pos = self.pos.copy()
@@ -618,8 +640,8 @@ class Ball:
         
         for i in range(int(t * 100)):
             pos = pos + vec2point(vel * 0.01)
-            vel.size -= 0.05
-            print(vel.size)
+            vel.size -= 0.35 # ~35 cm/s^2
+            
             if vel.size < 0:
                 vel.size = 0
                 return pos
@@ -704,7 +726,7 @@ fieldPainter = FieldPainter()
 ### ROBOT PARAMS
 PIX2CM_BALL = [[0, 0], [13, 21.3], [18, 25.4], [23, 29.6], [28, 37.4], [33, 47.9], [38, 56.8], [43, 68.9], [48, 79.8], [53, 88.2], [58, 96.8], [63, 103.1], [68, 109], [73, 114.5], [78, 119.1], [83, 121.8], [88, 123.7], [93, 125.2], [98, 127.4], [103, 130.1], [203, 190.1]]
 
-PIX2CM_GOAL = [[0, 0], [10, 30.3], [15, 42.2], [20, 52.4], [25, 61.7], [30, 72.8], [35, 78.6], [40, 87], [45, 92.4], [50, 96.6], [55, 101.9], [60, 108.6], [65, 112.8], [70, 116.2], [75, 120.5], [80, 123], [85, 125.2], [90, 127.4], [95, 130], [100, 131.5], [160, 160]]
+PIX2CM_GOAL = [[0, 0], [10, 30.3], [15, 42.2], [20, 52.4], [25, 61.7], [30, 72.8], [35, 78.6], [40, 87], [45, 92.4], [50, 96.6], [55, 101.9], [60, 108.6], [65, 112.8], [70, 116.2], [75, 120.5], [80, 123], [85, 125.2], [90, 127.4], [95, 130], [100, 131.5], [190, 160]]
 
 PIX2CM_BALL = PIX2CM_GOAL
 
@@ -728,6 +750,7 @@ def cm2pix(x, data):
     return (p1[1] * abs(p2[0] - x) + p2[1] * abs(p1[0] - x)) / (p2[0] - p1[0])
 
 ### MAIN CYCLE
+t=time()
 while 1:
     ### READ FRAME
     _, frame = cap.read()
@@ -761,6 +784,10 @@ while 1:
     
     ### SOME ADDITIONAL INFO
     output = cv.putText(output, col[calibrationState].name, (10, 30), cv.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 128), 2, cv.LINE_AA)
+    
+    fps = 1 / (time() - t)
+    t = time()
+    output = cv.putText(output, str(int(fps * 10) / 10), (10, 330), cv.FONT_HERSHEY_SIMPLEX, 1, (128, 255, 128), 2, cv.LINE_AA)
     
     output = cv.circle(output, CENTER, 4, (255, 0, 0), -1)
     
