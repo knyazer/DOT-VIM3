@@ -11,12 +11,15 @@ CAM_INDEX = 0
 RESIZE = 1.5
 MIN_OBJ_AREA = [15, 100, 100]
 IMG_SIZE = (640, 360)
+CENTER = (168, 182)
 
 FIELD_SIZE = (220, 180)
 
 PI = 3.141592
 RAD2DEG = 180 / PI
 DEG2RAD = PI / 180
+
+INF = 1e42
 
 @dataclass
 class PointProj:
@@ -29,10 +32,14 @@ def vec2point(vec):
 def point2vec(point):
     return Vec(point.size(), atan2(point.y, point.x))
 
+def np2point(arr):
+    return Point(arr[0], arr[1])
+
 class Point:
     def __init__(self, x = 0, y = 1):
         self.x = x
         self.y = y
+        
         
     def int(self):
         return Point(int(round(self.x)), int(round(self.y)))
@@ -124,6 +131,164 @@ class FieldData:
         self.p = [Point(), Point(), Point()]
         self.v = [Vec(1, 0), Vec(-1, 0), Vec(-1, 0)]
 
+
+
+class Line:
+    def __init__(self, coef, intercept):
+        self.coef = 0
+        self.intercept = 0
+
+class Segment:
+    def __init__(self, p1, p2):
+        self.p1 = p1
+        self.p2 = p2
+
+        self.coef = (p1.y - p2.y) / (p1.x - p2.x)
+        self.intercept = p1.y - coef * p1.x
+
+    def intersection(self, other):
+        if isinstanceof(other, Segment):
+            x = (other.intercept - self.intercept) / (self.coef - other.coef)
+            y = self.coef * x + self.intercept
+
+            if  x >= min(self.p1.x, self.p2.x) and x <= max(self.p1.x, self.p2.x) and y >= min(self.p1.y, self.p2.y) and y <= max(self.p1.x, self.p2.y) and \
+                    x >= min(other.p1.x, other.p2.x) and x <= max(other.p1.x, other.p2.x) and y >= min(other.p1.y, other.p2.y) and y <= max(other.p1.x, other.p2.y):
+                return [Point(x, y)]
+            else:
+                return []
+
+class Curve:
+    def __init__(self, pos, r, fr=0, to=2*PI):
+        self.pos = pos
+        self.r = r
+        self.fr = fr
+        self.to = to
+
+
+class PointSet:
+    def __init__(self, points):
+        self.points = np.array(points, dtype=np.float32)
+
+        if self.points.shape[1] != 2:
+            raise IndexError
+
+    def distances(self, point):
+        return np.sum(np.power(self.points - np.array([point.x, point.y]), 2), axis=1)
+
+    def proj(self, point):
+        return self.points[np.argmin(self.distances(point))]
+
+    def intersection(self, other):
+        if isinstanceof(other, Line):
+            dsts = np.power(intercept + coef * self.points[:, 0], 2) + np.power(self.points[:, 1] - intercept / coef, 2)
+
+            index = np.argmin(dsts)
+            return self.points[index]
+
+        elif isinstanceof(other, PointSet):
+            minDist = INF
+            minIndex = None
+
+            for point in other.points:
+                dsts = sef.distances(point)
+                index = np.argmin(dsts)
+                dist = dsts[index]
+
+                if dist < minDist:
+                    minDist = dist
+                    minIndex = index
+
+            return self.points[minIndex]
+
+        raise TypeError
+
+    def inArea(self, point):
+        segment = Segment(point, Point(point.x + INF, point.y))
+        intersectionCount = 0
+
+        for i in range(len(self.points)):
+            first = Point(*self.points[i - 1])
+            second = Point(*self.points[i])
+
+            intersection = segment.intersection(Segment(first, second))
+
+            intersectionCount += len(intersection)
+
+        if intersectionCount % 2 == 1:
+            return True
+        else:
+            return False
+
+FREQ = 1
+
+def curveToPoints(pos, r, fr=0, to=2*PI):
+    angle = np.linspace(fr, to, int(FREQ * (2 * PI * r) * ((to - fr) / (2 * PI))))
+
+    res = np.array([np.cos(angle) * r + pos.x, np.sin(angle) * r + pos.y], dtype=np.float32)
+
+    return np.transpose(res)
+
+def lineToPoints(p1, p2):
+    if p1.x != p2.x:
+        #print(p1.x, p2.x, p1.y, p2.y)
+        coef = (p1.y - p2.y) / (p1.x - p2.x)
+        #print(coef)
+        intercept = p1.y - coef * p1.x
+        #print(intercept)
+        x = np.linspace(p1.x, p2.x, int(FREQ * (p1 - p2).size()))
+        res = np.array([x, x * coef + intercept], dtype=np.float32)
+        #print(res)
+        return np.transpose(res)
+    else:
+        res = np.array([[p1.x] * int(FREQ * abs(p1.y - p2.y)), np.linspace(p1.y, p2.y, int(FREQ * abs(p1.y - p2.y)))], dtype=np.float32)
+
+        return np.transpose(res)
+
+def makeOutArea():
+    corner = Point(182 / 2, 121 / 2)
+
+    area = lineToPoints(-corner, Point(corner.x, -corner.y))
+    area = np.append(area, lineToPoints(Point( corner.x,      -corner.y), Point(corner.x, -corner.y + 26)), axis=0)
+    area = np.append(area, lineToPoints(Point( corner.x,      -corner.y + 26), Point(corner.x - 15, -corner.y + 26)), axis=0)
+    area = np.append(area, curveToPoints(Point(corner.x - 15, -corner.y + 26 + 15), 15, fr = PI, to = PI * 1.5), axis=0)
+    area = np.append(area, lineToPoints(Point( corner.x - 30, -corner.y + 26 + 15), Point(corner.x - 30, corner.y - 26 - 15)), axis=0)
+    area = np.append(area, curveToPoints(Point(corner.x - 15,  corner.y - 26 - 15), 15, fr = PI * 0.5, to = PI), axis=0)
+    area = np.append(area, lineToPoints(Point( corner.x - 15,  corner.y - 26), Point(corner.x, corner.y - 26)), axis=0)
+    area = np.append(area, lineToPoints(Point( corner.x,       corner.y - 26), corner), axis=0)
+
+    area = np.append(area, lineToPoints(corner, Point(-corner.x, corner.y)), axis=0)
+    area = np.append(area, lineToPoints(Point( -corner.x,       corner.y), Point(-corner.x, corner.y - 26)), axis=0)
+    area = np.append(area, lineToPoints(Point( -corner.x,       corner.y - 26), Point(-corner.x + 15, corner.y - 26)), axis=0)
+    area = np.append(area, curveToPoints(Point(-corner.x + 15,  corner.y - 26 - 15), 15, fr = 0, to = PI * 0.5), axis=0)
+    area = np.append(area, lineToPoints(Point( -corner.x + 30,  corner.y - 26 - 15), Point(-corner.x + 30, -corner.y + 26 + 15)), axis=0)
+    area = np.append(area, curveToPoints(Point(-corner.x + 15, -corner.y + 26 + 15), 15, fr = PI * 1.5, to = PI * 2), axis=0)
+    area = np.append(area, lineToPoints(Point( -corner.x + 15, -corner.y + 26), Point(-corner.x, -corner.y + 26)), axis=0)
+    area = np.append(area, lineToPoints(Point( -corner.x,      -corner.y + 26), -corner), axis=0)
+
+    return area
+
+def makeGoalArea(index=1):
+    corner = Point(182 / 2, 121 / 2)
+    
+    if index == 0:
+        area = lineToPoints(Point(                 corner.x - 14, -corner.y + 26), Point(corner.x - 15, -corner.y + 26))
+        area = np.append(area, curveToPoints(Point(corner.x - 15, -corner.y + 26 + 15), 15, fr = PI, to = PI * 1.5), axis=0)
+        area = np.append(area, lineToPoints(Point( corner.x - 30, -corner.y + 26 + 15), Point(corner.x - 30, corner.y - 26 - 15)), axis=0)
+        area = np.append(area, curveToPoints(Point(corner.x - 15,  corner.y - 26 - 15), 15, fr = PI * 0.5, to = PI), axis=0)
+        area = np.append(area, lineToPoints(Point( corner.x - 15,  corner.y - 26), Point(corner.x - 14, corner.y - 26)), axis=0)
+
+    elif index == 1:
+        area = lineToPoints(Point(                 -corner.x + 14,  corner.y - 26), Point(-corner.x + 15, corner.y - 26))
+        area = np.append(area, curveToPoints(Point(-corner.x + 15,  corner.y - 26 - 15), 15, fr = 0, to = PI * 0.5), axis=0)
+        area = np.append(area, lineToPoints(Point( -corner.x + 30,  corner.y - 26 - 15), Point(-corner.x + 30, -corner.y + 26 + 15)), axis=0)
+        area = np.append(area, curveToPoints(Point(-corner.x + 15, -corner.y + 26 + 15), 15, fr = PI * 1.5, to = PI * 2), axis=0)
+        area = np.append(area, lineToPoints(Point( -corner.x + 15, -corner.y + 26), Point(-corner.x + 14, -corner.y + 26)), axis=0)
+
+    else:
+        raise ValueError
+
+    return area
+
 class Robot:
     def __init__(self):
         self.pos = Point(0, 0)
@@ -167,6 +332,7 @@ class RobotInterface:
         h2 = int((self.head * K - h1) * 256)
 
         msg = [0xBB, int(self.vel * 50), d1, d2, h1, h2, int(self.acc), self.flags]
+        print(msg)
         msg.append(crc8(msg))
 
         return bytes(msg)
@@ -176,11 +342,30 @@ class RobotInterface:
         msg.append(crc8(msg))
         
         return bytes(msg)
-     
-class FieldPainter():
+
+class FieldEngine:
+    def __init__(self):
+        self.outArea = PointSet(makeOutArea())
+        self.ourGoal = PointSet(makeGoalArea())
+        self.enemyGoal = PointSet(makeGoalArea(0))
+        
+        ### Change that if you need to choose goals
+        self.goalieTarget = Point(-70, 0)
+        
+    def update(self, world):
+        self.goalieTarget = np2point(self.ourGoal.proj((world.ball.pos * 0.3 + world.ball.predict(1.2) * 0.7) * 0.7 + self.goalieTarget * 0.3))
+        
+        
+class FieldPainter:
     def __init__(self):
         self.size = Point(FIELD_SIZE[0], FIELD_SIZE[1])
         self.center = self.size / 2   
+        
+        self.outArea = makeOutArea()[::5]
+        self.ourGoal = makeGoalArea()[::5]
+        self.enemyGoal = makeGoalArea(0)[::5]
+        #for p in self.outArea:
+        #    pass#print(p)
         
         self.color = (50, 200, 40)
         self.ballColor = (20, 30, 180)
@@ -190,11 +375,25 @@ class FieldPainter():
         self.image = np.zeros((int(self.size.y), int(self.size.x), 3), dtype=np.uint8)
         self.image[:] = self.color
         
-        self.image = cv.circle(self.image, (world.ball.pos + self.center).int().tuple(), 4, self.ballColor, -1)
+        for p in self.outArea:
+            self.image = cv.circle(self.image, (int(self.center.x + p[0]), int(self.center.y + p[1])), 2, (250, 250, 250), -1)
+        
+        for p in self.ourGoal:
+            self.image = cv.circle(self.image, (int(self.center.x + p[0]), int(self.center.y + p[1])), 2, (120, 255, 100), -1)
+        
+        for p in self.enemyGoal:
+            self.image = cv.circle(self.image, (int(self.center.x + p[0]), int(self.center.y + p[1])), 2, (100, 120, 255), -1)
+            
+        
+        self.image = cv.circle(self.image, (world.robot.pos + self.center).int().tuple(), 10, (140, 140, 140), -1)
+        
+        self.image = cv.circle(self.image, (world.ball.pos + self.center).int().tuple(), 3, self.ballColor, -1)
+        
+        self.image = cv.circle(self.image, (self.center + world.fieldEngine.goalieTarget).int().tuple(), 3, (5, 5, 5), -1)
         
         if trajectories:
             self.image = cv.line(self.image, (world.ball.pos + self.center).int().tuple(), (self.center + world.ball.predict(20)).int().tuple(), self.ballTrajectoryColor, 2)
-            print("From {}, Target: {}".format(str(world.ball.pos), str(world.ball.predict(20))))
+            #print("From {}, Target: {}".format(str(world.ball.pos), str(world.ball.predict(20))))
         
     def show(self, state=None):
         if state != None:
@@ -268,8 +467,7 @@ class ColorDetector:
 
     def inRange(self, img):
         return _CD_inRange(img, self.data, self.m)
-
-
+        
 def mouseCallback(event, x, y, flags, param):
     ### APPLY RESIZE
     x /= RESIZE
@@ -399,7 +597,6 @@ def calculatePos(weights):
         if weights[YELLOW_GOAL] + weights[BLUE_GOAL] != 0:
             world.robot.pos = ((yellow * weights[YELLOW_GOAL] + blue * weights[BLUE_GOAL]) / (weights[YELLOW_GOAL] + weights[BLUE_GOAL]))
         
-        
         ballAngle = ((fieldData.v[BALL].dir + 360 - world.interface.angle) % 360) * DEG2RAD
     else:
         d2 = pix2cm(fieldData.v[YELLOW_GOAL].size - 8, PIX2CM_GOAL)
@@ -434,17 +631,18 @@ def calculatePos(weights):
         
         world.robot.pos = Point(x, y)
         
-        ballAngle = ((fieldData.v[BALL].dir + 360 - angle) % 360) * DEG2RAD
+        ballAngle = ((-fieldData.v[BALL].dir + 360 - angle) % 360) * DEG2RAD
         
     ballDist = pix2cm(fieldData.v[BALL].size, PIX2CM_BALL)
     if weights[BALL] != 0:
         world.ball.updatePosition(world.robot.pos + Point(cos(ballAngle), sin(ballAngle)) * ballDist)
-        #print(world.ball.pos)
         world.ball.updateVelocity()
+     
+    world.fieldEngine.update(world)
     
 
 def detect(frame):
-    global col, fieldData, world
+    global col, fieldData, world, CENTER
     
     thresh = np.zeros(frame.shape[:2], dtype=np.uint8)
     output = np.copy(frame)
@@ -628,7 +826,7 @@ class Ball:
         self.velVec = Vec(projSize, added + atan(lineReg.coef_[0]))
         
         self.current = self.predict(0.5) * 0.5 + self.current * 0.5
-        print("Current: {}".format(self.current))
+        #print("Current: {}".format(self.current))
     
     def predict(self, t):
         pos = self.pos.copy()
@@ -652,6 +850,7 @@ class World:
     def __init__(self, acc = 20):
         self.interface = RobotInterface()
         self.interface.acc = acc
+        self.fieldEngine = FieldEngine()
         
         self.robot = Robot()
         self.ball = Ball()
@@ -767,7 +966,22 @@ while 1:
     
     ### READ SERIAL
     readSTM()
-        
+    
+    
+    ### ALGO LOGIC
+    delta = point2vec(world.fieldEngine.goalieTarget - world.robot.pos)
+    vel = delta.size / 100 - 0.05
+
+    if vel > 0.3:
+        vel = 0.3    
+    if vel < 0:
+        vel = 0
+    
+    world.interface.vel = vel
+    world.interface.dir = (RAD2DEG * -delta.dir + 360) % 360
+    
+    print(world.interface.dir)
+    
     if STATE == CALIBRATION:
         output = inCalibration(frame)
     if STATE != CALIBRATION:
