@@ -77,6 +77,9 @@ class Point:
     def __truediv__(self, k):
         return Point(self.x / k, self.y / k)
     
+    def __eq__(self, other):
+        return self.x == other.x and self.y == other.y
+    
     def __add__(self, a):
         try:
             return Point(self.x + a.x, self.y + a.y)
@@ -130,8 +133,6 @@ class FieldData:
     def __init__(self):
         self.p = [Point(), Point(), Point()]
         self.v = [Vec(1, 0), Vec(-1, 0), Vec(-1, 0)]
-
-
 
 class Line:
     def __init__(self, coef, intercept):
@@ -268,7 +269,7 @@ def makeOutArea():
     area = np.append(area, lineToPoints(Point( -corner.x,      -corner.y + 26), -corner), axis=0)
 
     return area
-
+    
 def makeGoalArea(index=1):
     corner = Point(182 / 2, 121 / 2)
     
@@ -287,10 +288,20 @@ def makeGoalArea(index=1):
 
     return area
 
+class SimplifiedBall:
+    def __init__(self):
+         self.pos = Point(0, 0)
+         self.vel = Point(0, 0)
+    
+    def updatePos(self, dt):
+        self.pos += self.vel * dt
+
 class Robot:
     def __init__(self):
         self.pos = Point(0, 0)
         self.vel = Point(0, 0)
+        
+        self.ball = SimplifiedBall()
 
 class RobotInterface:
     def __init__(self):        
@@ -328,8 +339,8 @@ class RobotInterface:
         
         K = 256 / 360
 
-        d1 = int(self.dir * K)
-        d2 = int((self.dir * K - d1) * 256)
+        d1 = int(((360 - self.dir)%360) * K)
+        d2 = int((((360 - self.dir)%360) * K - d1) * 256)
 
         h1 = int(self.head * K)
         h2 = int((self.head * K - h1) * 256)
@@ -608,6 +619,13 @@ def comp(a):
     return -a[1]
 #rr = 0
 
+def nall(arr, value):
+    for x in arr:
+        if not (x == value):
+            return False
+            
+    return True
+
 def calculatePos(weights):
     global world, fieldData
     
@@ -669,8 +687,20 @@ def calculatePos(weights):
         
     ballDist = pix2cm(fieldData.v[BALL].size, PIX2CM_BALL)
     if weights[BALL] != 0:
+        if nall(world.ball.oldPoints, world.ball.pos):
+            world.ball.oldPoints = [world.ball.pos.copy()] * len(world.ball.oldPoints)
+            
         world.ball.updatePosition(world.robot.pos - Point(cos(ballAngle), sin(ballAngle)) * ballDist)
         world.ball.updateVelocity()
+        world.robot.ball.pos = world.ball.pos - world.robot.pos
+        
+    else:
+        world.ball.velVec = Vec(0, 0)
+        if world.robot.ball.pos.size() < 18:
+            world.robot.ball.pos = Point(-5, 0)
+        world.ball.pos = world.robot.pos + world.robot.ball.pos
+        world.ball.oldPoints = [world.ball.pos.copy()] * len(world.ball.oldPoints)
+        world.ball.current = world.ball.pos.copy()
      
     world.fieldEngine.update(world)
     
@@ -984,11 +1014,9 @@ fieldData = FieldData()
 fieldPainter = FieldPainter()
 
 ### ROBOT PARAMS
-PIX2CM_BALL = [[0, 0], [13, 21.3], [18, 25.4], [23, 29.6], [28, 37.4], [33, 47.9], [38, 56.8], [43, 68.9], [48, 79.8], [53, 88.2], [58, 96.8], [63, 103.1], [68, 109], [73, 114.5], [78, 119.1], [83, 121.8], [88, 123.7], [93, 125.2], [98, 127.4], [103, 130.1], [203, 190.1]]
+PIX2CM_BALL = [[0, 0], [15, 12.6], [20, 18], [25, 25], [30, 34.5], [35, 44.2], [40, 53.7], [45, 63], [50, 72.3], [55, 80.3], [60, 88.6], [65, 95], [70, 101], [75, 106], [80, 111.2], [85, 115], [90, 119], [95, 122], [100, 125], [105, 128], [110, 131], [115, 133], [120, 135], [125, 138], [225, 188]]
 
 PIX2CM_GOAL = [[0, 0], [10, 30.3], [15, 42.2], [20, 52.4], [25, 61.7], [30, 72.8], [35, 78.6], [40, 87], [45, 92.4], [50, 96.6], [55, 101.9], [60, 108.6], [65, 112.8], [70, 116.2], [75, 120.5], [80, 123], [85, 125.2], [90, 127.4], [95, 130], [100, 131.5], [190, 160]]
-
-PIX2CM_BALL = PIX2CM_GOAL
 
 def pix2cm(x, data):
     i = 0
@@ -1010,7 +1038,13 @@ def cm2pix(x, data):
     return (p1[1] * abs(p2[0] - x) + p2[1] * abs(p1[0] - x)) / (p2[0] - p1[0])
 
 ### MAIN CYCLE
+GOALIER = 0
+STRIKER = 1
+STYLE = STRIKER
 t=time()
+connectStateTime = -1
+blockedConnect = False
+dd = 0
 while 1:
     ### READ FRAME
     _, frame = cap.read()
@@ -1029,24 +1063,54 @@ while 1:
     
     #print(f'{world.robot.pos} eq {world.fieldEngine.goalieTarget})')
     ### ALGO LOGIC
-    delta = world.robot.pos - world.fieldEngine.goalieTarget
-    delta.y = -delta.y
-    delta = point2vec(delta)
-    vel = delta.size / 30 - 0.1
+    if STYLE == GOALIER:
+        delta = world.robot.pos - world.fieldEngine.goalieTarget
+        delta.y = -delta.y
+        delta = point2vec(delta)
+        vel = delta.size / 30 - 0.1
 
-    if vel > 0.8:
-        vel = 0.8    
-    if vel < 0:
-        vel = 0
+        if vel > 0.8:
+            vel = 0.8    
+        if vel < 0:
+            vel = 0
+        else:
+            vel += 0.2
+    
+        world.interface.vel = vel
+        world.interface.dir = (RAD2DEG * delta.dir + 360 + 180) % 360
     else:
-        vel += 0.2
-    
-    #print(vel)
-    
-    world.interface.vel = vel
-    world.interface.dir = (RAD2DEG * -delta.dir + 360) % 360
-    #world.interface.vel = 0.5
-    #world.interface.dir = 180
+        delta = world.robot.pos - world.ball.pos
+        
+        toBall = (RAD2DEG * point2vec(delta).dir + 360) % 360
+        if toBall > 180:
+             toBall -= 360
+        
+        distCoef = 90 - 10 * (delta.size() - min(22, abs(toBall) * 0.5))
+        if distCoef < 0:
+            distCoef = 0
+        if distCoef > 180:
+            distCoef = 180
+            
+        world.interface.dir = (360 + toBall + distCoef * sign(toBall)) % 360
+        world.interface.vel = 0.2
+        
+        #print(delta.size())
+        
+        if abs(toBall) < 30 and delta.size() < 20 and not blockedConnect:
+            connectStateTime = time()
+            blockedConnect = True
+        
+        if abs(toBall) > 60 or delta.size() > 25:
+            blockedConnect = False
+        
+        if time() - connectStateTime < 1.2:
+            world.interface.dir = (toBall + 360) % 360
+        
+        
+        _ = vec2point(Vec(1, world.interface.dir * DEG2RAD))
+        _.y = -_.y
+        world.interface.dir = (point2vec(_).dir * RAD2DEG + 360) % 360
+        
     if STATE == CALIBRATION:
         output = inCalibration(frame)
     if STATE != CALIBRATION:
@@ -1072,12 +1136,12 @@ while 1:
     
     #print(cm2pix(60, PIX2CM_BALL))#output = cv.line(output, ball.pos
     
-    #print(world.robot.pos)
+    #print(world.ball.pos)
     
     ### SHOW FRAME
     imshow('frame', cv.resize(output, None, fx = RESIZE, fy = RESIZE))
     
-    print(world.robot.pos, world.ball.pos, (world.ball.velVec.dir * RAD2DEG, world.ball.velVec.size), world.ball.current)
+    #print(world.robot.pos, world.ball.pos, (world.ball.velVec.dir * RAD2DEG, world.ball.velVec.size), world.ball.current)
     
     #### KEYS
     if detectKeys():
