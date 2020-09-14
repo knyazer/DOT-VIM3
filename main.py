@@ -11,7 +11,7 @@ CAM_INDEX = 0
 RESIZE = 1.5
 MIN_OBJ_AREA = [15, 100, 100]
 IMG_SIZE = (640, 360)
-CENTER = (168, 182)
+CENTER = tuple(np.load('center.npy').tolist())
 
 FIELD_SIZE = (220, 180)
 
@@ -135,8 +135,8 @@ class FieldData:
 
 class Line:
     def __init__(self, coef, intercept):
-        self.coef = 0
-        self.intercept = 0
+        self.coef = coef
+        self.intercept = intercept
 
 class Segment:
     def __init__(self, p1, p2):
@@ -147,7 +147,7 @@ class Segment:
         self.intercept = p1.y - coef * p1.x
 
     def intersection(self, other):
-        if isinstanceof(other, Segment):
+        if isinstance(other, Segment):
             x = (other.intercept - self.intercept) / (self.coef - other.coef)
             y = self.coef * x + self.intercept
 
@@ -179,13 +179,15 @@ class PointSet:
         return self.points[np.argmin(self.distances(point))]
 
     def intersection(self, other):
-        if isinstanceof(other, Line):
+        if isinstance(other, Line):
+            intercept = other.intercept
+            coef = other.coef
             dsts = np.power(intercept + coef * self.points[:, 0], 2) + np.power(self.points[:, 1] - intercept / coef, 2)
 
             index = np.argmin(dsts)
             return self.points[index]
-
-        elif isinstanceof(other, PointSet):
+            
+        elif isinstance(other, PointSet):
             minDist = INF
             minIndex = None
 
@@ -199,7 +201,7 @@ class PointSet:
                     minIndex = index
 
             return self.points[minIndex]
-
+        
         raise TypeError
 
     def inArea(self, point):
@@ -271,18 +273,14 @@ def makeGoalArea(index=1):
     corner = Point(182 / 2, 121 / 2)
     
     if index == 0:
-        area = lineToPoints(Point(                 corner.x - 14, -corner.y + 26), Point(corner.x - 15, -corner.y + 26))
-        area = np.append(area, curveToPoints(Point(corner.x - 15, -corner.y + 26 + 15), 15, fr = PI, to = PI * 1.5), axis=0)
+        area = curveToPoints(Point(corner.x - 15, -corner.y + 26 + 15), 15, fr = PI, to = PI * 1.5)
         area = np.append(area, lineToPoints(Point( corner.x - 30, -corner.y + 26 + 15), Point(corner.x - 30, corner.y - 26 - 15)), axis=0)
         area = np.append(area, curveToPoints(Point(corner.x - 15,  corner.y - 26 - 15), 15, fr = PI * 0.5, to = PI), axis=0)
-        area = np.append(area, lineToPoints(Point( corner.x - 15,  corner.y - 26), Point(corner.x - 14, corner.y - 26)), axis=0)
 
     elif index == 1:
-        area = lineToPoints(Point(                 -corner.x + 14,  corner.y - 26), Point(-corner.x + 15, corner.y - 26))
-        area = np.append(area, curveToPoints(Point(-corner.x + 15,  corner.y - 26 - 15), 15, fr = 0, to = PI * 0.5), axis=0)
+        area = curveToPoints(Point(-corner.x + 15,  corner.y - 26 - 15), 15, fr = 0, to = PI * 0.5)
         area = np.append(area, lineToPoints(Point( -corner.x + 30,  corner.y - 26 - 15), Point(-corner.x + 30, -corner.y + 26 + 15)), axis=0)
         area = np.append(area, curveToPoints(Point(-corner.x + 15, -corner.y + 26 + 15), 15, fr = PI * 1.5, to = PI * 2), axis=0)
-        area = np.append(area, lineToPoints(Point( -corner.x + 15, -corner.y + 26), Point(-corner.x + 14, -corner.y + 26)), axis=0)
 
     else:
         raise ValueError
@@ -309,7 +307,12 @@ class RobotInterface:
         self.qAngle.append(angle)
         self.angle = self.qAngle.pop(0)
     
-    def toBytes(self):
+    def updateModel(self):
+        global world
+        world.virtualRobot.update(Vec(self.vel, self.dir * DEG2RAD))
+    
+    def toBytes(self):  
+        self.updateModel()
         if abs(self.targetHead - self.head) > 180:
             signum = -1
         else:
@@ -338,6 +341,8 @@ class RobotInterface:
         return bytes(msg)
         
     def stopBytes(self):
+        self.updateModel()
+        
         msg = [0xBB, 0, 0, 0, 0, 0, 0, 0]
         msg.append(crc8(msg))
         
@@ -346,14 +351,30 @@ class RobotInterface:
 class FieldEngine:
     def __init__(self):
         self.outArea = PointSet(makeOutArea())
-        self.ourGoal = PointSet(makeGoalArea())
-        self.enemyGoal = PointSet(makeGoalArea(0))
+        self.enemyGoal = PointSet(makeGoalArea())
+        self.ourGoal = PointSet(makeGoalArea(0))
         
         ### Change that if you need to choose goals
-        self.goalieTarget = Point(-70, 0)
+        self.centerPoint = Point(70, 0)
+        self.goalieTarget = self.centerPoint.copy()
         
     def update(self, world):
-        self.goalieTarget = np2point(self.ourGoal.proj((world.ball.pos * 0.3 + world.ball.predict(1.2) * 0.7) * 0.7 + self.goalieTarget * 0.3))
+        rawBall = world.ball.pos
+        currentBall = world.ball.predict(0.35)
+        previousTarget = self.goalieTarget.copy()
+        distToBall = abs(world.ball.pos.y - world.robot.pos.y)
+        distCoef = distToBall / 40 - 1
+        
+        if distCoef < 0: ### When ball is near
+            distCoef = 0
+        if distCoef > 1: ### When ball is far away
+           distCoef = 1
+        
+        ### something wrong with direction calculation, try to move ball from right up to bottom down
+        target = currentBall
+        target = self.centerPoint * distCoef + target * (1 - distCoef)
+        target = target * 0.8 + previousTarget * 0.2
+        self.goalieTarget = np2point(self.ourGoal.proj(target))
         
         
 class FieldPainter:
@@ -379,13 +400,13 @@ class FieldPainter:
             self.image = cv.circle(self.image, (int(self.center.x + p[0]), int(self.center.y + p[1])), 2, (250, 250, 250), -1)
         
         for p in self.ourGoal:
-            self.image = cv.circle(self.image, (int(self.center.x + p[0]), int(self.center.y + p[1])), 2, (120, 255, 100), -1)
+            self.image = cv.circle(self.image, (int(self.center.x + p[0]), int(self.center.y + p[1])), 2, (100, 120, 255), -1)
         
         for p in self.enemyGoal:
-            self.image = cv.circle(self.image, (int(self.center.x + p[0]), int(self.center.y + p[1])), 2, (100, 120, 255), -1)
+            self.image = cv.circle(self.image, (int(self.center.x + p[0]), int(self.center.y + p[1])), 2, (120, 255, 100), -1)
             
         
-        self.image = cv.circle(self.image, (world.robot.pos + self.center).int().tuple(), 10, (140, 140, 140), -1)
+        self.image = cv.circle(self.image, (world.virtualRobot.pos + self.center).int().tuple(), 10, (140, 140, 140), -1)
         
         self.image = cv.circle(self.image, (world.ball.pos + self.center).int().tuple(), 3, self.ballColor, -1)
         
@@ -467,15 +488,20 @@ class ColorDetector:
 
     def inRange(self, img):
         return _CD_inRange(img, self.data, self.m)
-        
-def mouseCallback(event, x, y, flags, param):
+
+mousePosition = Point(0, 0)
+
+def mouseCallback(event, x, y, flags, param):    
+    
     ### APPLY RESIZE
     x /= RESIZE
     y /= RESIZE
-
+    
     x = int(x)
     y = int(y)
-
+    
+    global mousePosition
+    mousePosition = Point(x, y)
     global ipos, frame, STATE, CALIBRATION, STOP
 
     if event == cv.EVENT_LBUTTONDOWN or event == cv.EVENT_RBUTTONDOWN:
@@ -563,6 +589,11 @@ def detectKeys():
         else:
             print("PLAY")
             STATE = PLAY
+    elif key == ord('c') or key == ord('C'):
+        global CENTER
+        CENTER = mousePosition.tuple()
+        
+        np.save('center.npy', CENTER)
 
     return False
 
@@ -582,22 +613,24 @@ def calculatePos(weights):
     
     L = 90
     #global rr
-    if weights[YELLOW_GOAL] == 0 or weights[BLUE_GOAL] == 0:
+    if True or weights[YELLOW_GOAL] == 0 or weights[BLUE_GOAL] == 0:
         ### CALC CURRENT POSITION OF ROBOT
         yellowDist = pix2cm(fieldData.v[YELLOW_GOAL].size, PIX2CM_GOAL)
         yellowAngle = ((fieldData.v[YELLOW_GOAL].dir + 360 - world.interface.angle) % 360) * DEG2RAD
-        posOfYellow = np.array([L, 0]) + np.array([cos(yellowAngle), sin(yellowAngle)]) * yellowDist
+        posOfYellow = np.array([-L, 0]) + np.array([cos(yellowAngle), sin(yellowAngle)]) * yellowDist
         yellow = Point(posOfYellow[0], posOfYellow[1])
     
         blueDist = pix2cm(fieldData.v[BLUE_GOAL].size - 7, PIX2CM_GOAL)
         blueAngle = ((fieldData.v[BLUE_GOAL].dir + 360 - world.interface.angle) % 360) * DEG2RAD
-        posOfBlue = np.array([-L, 0]) + np.array([cos(blueAngle), sin(blueAngle)]) * blueDist
+        posOfBlue = np.array([L, 0]) + np.array([cos(blueAngle), sin(blueAngle)]) * blueDist
         blue = Point(posOfBlue[0], posOfBlue[1])
      
         if weights[YELLOW_GOAL] + weights[BLUE_GOAL] != 0:
             world.robot.pos = ((yellow * weights[YELLOW_GOAL] + blue * weights[BLUE_GOAL]) / (weights[YELLOW_GOAL] + weights[BLUE_GOAL]))
         
         ballAngle = ((fieldData.v[BALL].dir + 360 - world.interface.angle) % 360) * DEG2RAD
+        
+        #print(world.robot.pos)
     else:
         d2 = pix2cm(fieldData.v[YELLOW_GOAL].size - 8, PIX2CM_GOAL)
         d1 = pix2cm(fieldData.v[BLUE_GOAL].size + 6, PIX2CM_GOAL)
@@ -605,6 +638,7 @@ def calculatePos(weights):
        
         if alpha < 0:
             alpha += 360
+        
         
         alpha *= DEG2RAD
         
@@ -635,7 +669,7 @@ def calculatePos(weights):
         
     ballDist = pix2cm(fieldData.v[BALL].size, PIX2CM_BALL)
     if weights[BALL] != 0:
-        world.ball.updatePosition(world.robot.pos + Point(cos(ballAngle), sin(ballAngle)) * ballDist)
+        world.ball.updatePosition(world.robot.pos - Point(cos(ballAngle), sin(ballAngle)) * ballDist)
         world.ball.updateVelocity()
      
     world.fieldEngine.update(world)
@@ -846,6 +880,32 @@ class Ball:
         return pos
         #return self.pos + vec2point(self.velVec * t)
 
+class RobotModel():
+    def __init__(self):
+        self.vels = [Point(0,0)] * 5
+        self.dt = 1/50 ### CHANGE THERE
+        self.pos = Point(0, 0)
+        self.hist = [Point(0,0)] * 5
+    
+    def update(self, vel):
+        global world
+        self.vels.pop(0)
+        cvel = vec2point(vel) * self.dt * 100
+        cvel.y = -cvel.y
+        self.vels.append(cvel) ### cm/s
+        self.pos = world.robot.pos.copy()
+        for vel in self.vels:
+           self.pos += vel
+           
+        self.hist.pop(0)
+        self.hist.append(self.pos.copy())
+        #print('------')
+        #for v in self.hist:
+        #    print(v)
+        #print('------')
+        
+        #print(f'{self.hist[0]} eq {world.robot.pos} (current {self.pos})')
+
 class World:
     def __init__(self, acc = 20):
         self.interface = RobotInterface()
@@ -854,6 +914,7 @@ class World:
         
         self.robot = Robot()
         self.ball = Ball()
+        self.virtualRobot = RobotModel()
         
         
 world = World()
@@ -903,8 +964,8 @@ os.system('v4l2-ctl -c white_balance_temperature_auto=1;')
 
 ### VISION CONFIGURATION
 cap = cv.VideoCapture(CAM_INDEX)
-cap.set(cv.CAP_PROP_FRAME_WIDTH, 1280)
-cap.set(cv.CAP_PROP_FRAME_HEIGHT, 720)
+cap.set(cv.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv.CAP_PROP_FRAME_HEIGHT, 360)
 cap.set(cv.CAP_PROP_CONTRAST, 25)
 cap.set(cv.CAP_PROP_BRIGHTNESS, 100)
 cap.set(cv.CAP_PROP_SATURATION, 100)
@@ -953,13 +1014,12 @@ t=time()
 while 1:
     ### READ FRAME
     _, frame = cap.read()
-    frame = cv.resize(frame, None, fx=0.5, fy=0.5)
+    #frame = cv.resize(frame, None, fx=0.5, fy=0.5)
     frame = frame[0:-10, 150:-130, :]
     frame = cv.rotate(frame, cv.ROTATE_90_COUNTERCLOCKWISE)
     
     ### RECALCULATE FRAME SIZE
     H, W, _ = frame.shape
-    CENTER = (168, 182)
     
     ### DENOISE
     frame = cv.GaussianBlur(frame, (3, 3), 0)
@@ -967,21 +1027,26 @@ while 1:
     ### READ SERIAL
     readSTM()
     
-    
+    #print(f'{world.robot.pos} eq {world.fieldEngine.goalieTarget})')
     ### ALGO LOGIC
-    delta = point2vec(world.fieldEngine.goalieTarget - world.robot.pos)
-    vel = delta.size / 100 - 0.05
+    delta = world.robot.pos - world.fieldEngine.goalieTarget
+    delta.y = -delta.y
+    delta = point2vec(delta)
+    vel = delta.size / 30 - 0.1
 
-    if vel > 0.3:
-        vel = 0.3    
+    if vel > 0.8:
+        vel = 0.8    
     if vel < 0:
         vel = 0
+    else:
+        vel += 0.2
+    
+    #print(vel)
     
     world.interface.vel = vel
     world.interface.dir = (RAD2DEG * -delta.dir + 360) % 360
-    
-    print(world.interface.dir)
-    
+    #world.interface.vel = 0.5
+    #world.interface.dir = 180
     if STATE == CALIBRATION:
         output = inCalibration(frame)
     if STATE != CALIBRATION:
@@ -1011,6 +1076,8 @@ while 1:
     
     ### SHOW FRAME
     imshow('frame', cv.resize(output, None, fx = RESIZE, fy = RESIZE))
+    
+    print(world.robot.pos, world.ball.pos, (world.ball.velVec.dir * RAD2DEG, world.ball.velVec.size), world.ball.current)
     
     #### KEYS
     if detectKeys():
