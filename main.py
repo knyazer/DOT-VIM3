@@ -1040,11 +1040,13 @@ def cm2pix(x, data):
 ### MAIN CYCLE
 GOALIER = 0
 STRIKER = 1
-STYLE = STRIKER
+STYLE = GOALIER
 t=time()
 connectStateTime = -1
 blockedConnect = False
 dd = 0
+kickBlocked = False
+kickState = -1
 while 1:
     ### READ FRAME
     _, frame = cap.read()
@@ -1077,7 +1079,25 @@ while 1:
             vel += 0.2
     
         world.interface.vel = vel
-        world.interface.dir = (RAD2DEG * delta.dir + 360 + 180) % 360
+        world.interface.dir = (RAD2DEG * delta.dir + 360) % 360
+        
+        delta2 = world.robot.pos - world.ball.pos
+        toBall = (RAD2DEG * point2vec(delta2).dir + 360) % 360
+        if toBall > 180:
+             toBall -= 360
+        
+        if (world.ball.pos - world.robot.pos).size() < 30 and abs(toBall) < 45 and abs(world.ball.pos.x) < abs(world.robot.pos.x) and not kickBlocked:
+            kickState = time()
+            kickBlocked = True
+        
+        if time() - kickState < 0.3:
+            d = world.robot.pos - world.ball.pos
+            d.y = -d.y 
+            world.interface.dir = (point2vec(d).dir * RAD2DEG + 360) % 360
+            world.interface.vel = 1.2
+        elif time() - kickState > 2:
+            kickBlocked = False
+            
     else:
         delta = world.robot.pos - world.ball.pos
         
