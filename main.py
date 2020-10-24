@@ -290,14 +290,14 @@ def makeGoalArea(index=1):
     corner = Point(182 / 2, 121 / 2)
     
     if index == 0:
-        area = curveToPoints(Point(corner.x - 15, -corner.y + 26 + 15), 15, fr = PI, to = PI * 1.5)
-        area = np.append(area, lineToPoints(Point( corner.x - 30, -corner.y + 26 + 15), Point(corner.x - 30, corner.y - 26 - 15)), axis=0)
-        area = np.append(area, curveToPoints(Point(corner.x - 15,  corner.y - 26 - 15), 15, fr = PI * 0.5, to = PI), axis=0)
+        area = curveToPoints(Point(corner.x - 17, -corner.y + 26 + 15), 15, fr = PI, to = PI * 1.5)
+        area = np.append(area, lineToPoints(Point( corner.x - 34, -corner.y + 26 + 15), Point(corner.x - 34, corner.y - 26 - 15)), axis=0)
+        area = np.append(area, curveToPoints(Point(corner.x - 17,  corner.y - 26 - 15), 15, fr = PI * 0.5, to = PI), axis=0)
 
     elif index == 1:
-        area = curveToPoints(Point(-corner.x + 15,  corner.y - 26 - 15), 15, fr = 0, to = PI * 0.5)
-        area = np.append(area, lineToPoints(Point( -corner.x + 30,  corner.y - 26 - 15), Point(-corner.x + 30, -corner.y + 26 + 15)), axis=0)
-        area = np.append(area, curveToPoints(Point(-corner.x + 15, -corner.y + 26 + 15), 15, fr = PI * 1.5, to = PI * 2), axis=0)
+        area = curveToPoints(Point(-corner.x + 17,  corner.y - 26 - 15), 15, fr = 0, to = PI * 0.5)
+        area = np.append(area, lineToPoints(Point( -corner.x + 34,  corner.y - 26 - 15), Point(-corner.x + 34, -corner.y + 26 + 15)), axis=0)
+        area = np.append(area, curveToPoints(Point(-corner.x + 17, -corner.y + 26 + 15), 15, fr = PI * 1.5, to = PI * 2), axis=0)
 
     else:
         raise ValueError
@@ -1073,7 +1073,7 @@ def cm2pix(x, data):
 ### MAIN CYCLE
 GOALIER = 0
 STRIKER = 1
-STYLE = STRIKER
+STYLE = GOALIER
 t=time()
 connectStateTime = -1
 blockedConnect = False
@@ -1135,55 +1135,36 @@ while 1:
             kickBlocked = False
             
     else:
-        if world.robot.pos.x < world.ball.pos.x - ballOuterRadius:
-            targetLst = []
-            for signum in [1, -1]:
-                toBall = makeLine(world.robot.pos, world.ball.pos)
-                if toBall.coef == 0:
-                    toBall.coef = 1e9
-        
-                dAngle = signum * atan(ballOuterRadius / (world.robot.pos - world.ball.pos).size())
-                tcoef = tan(atan(toBall.coef) + dAngle)
-        
-                if tcoef == 0:
-                    tcoef = 1e-9
-        
-                traj = Line(tcoef, 0)
-                traj.intercept = world.robot.pos.y - world.robot.pos.x * traj.coef
-        
-                targetLst.append(traj.atX(world.ball.pos.x - signum * sin(atan(toBall.coef)) * ballOuterRadius)) # Using touching line
-                
-            if targetLst[0].x > targetLst[1].x:
-                target = targetLst[0]
-            else:
-                target = targetLst[1]
-            
-            print(targetLst[0], targetLst[1])
-            print("FIRST")
-        elif world.robot.pos.x < world.ball.pos.x:
-            targetLst = []
-            for signum in [1, -1]:
-                targetLst.append(Point(world.robot.ball.pos.x + ballOuterRadius, world.ball.pos.y + signum * ballOuterRadius))
-            if (targetLst[0] - world.robot.pos).size() < (targetLst[1] - world.robot.pos).size():
-                target = targetLst[0]
-            else:
-                target = targetLst[1]
-                
+        if world.ball.pos.x > world.robot.pos.x:
+            toBall = point2vec(world.ball.pos - world.robot.pos)
+            print("NOMRAL")
         else:
-            dvec = point2vec(Point(world.ball.pos.x + ballOuterRadius, world.ball.pos.y) - world.robot.pos)# Move directly to strike position 
-            dvec.size = 3
-            target = vec2point(dvec) + world.robot.pos - world.ball.pos # Move to cartesian with center in ball
-            target = np2point(ballOuterArea.proj(target)) + world.ball.pos # Make projection to constant area around the ball
-            print("SECOND")
+            print("HOH")
+            toBall = point2vec(world.ball.pos - world.robot.pos + Point(15, 0))
+            
+            if abs(toBall.dir - PI) < 0.5:
+                 toBall = point2vec(world.ball.pos - world.robot.pos)
+        toBall.dir = -toBall.dir
+        toBall.dir *= RAD2DEG
+        toBall.dir += 180
+        
+        if toBall.dir > 180:
+            toBall.dir -= 360
         
         
-        world.interface.dir = ((180 - point2vec(target - world.robot.pos).dir * RAD2DEG) + 360) % 360
-        world.interface.vel = 0.2
+        moveDir = 50 * toBall.dir / toBall.size
+        world.interface.dir = (moveDir + 360) % 360
+        world.interface.vel = 0.3
         
-        fieldPainter.drawCircle(target, 3)
         
-        #_ = vec2point(Vec(1, world.interface.dir * DEG2RAD))
-        #_.y = -_.y
+        
+        print(world.interface.dir)
+        
+        if onLine:
+             pass
+        #fieldPainter.drawCircle(target, 3)
+        
+        #_ = vec2point(Vec(1, -world.interface.dir * DEG2RAD))
         #world.interface.dir = (point2vec(_).dir * RAD2DEG + 360) % 360
         
     if STATE == CALIBRATION:
